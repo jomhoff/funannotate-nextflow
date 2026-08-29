@@ -22,7 +22,11 @@ GeneMark, InterProScan, and the Funannotate databases are deliberately passed as
 host paths because they are large and/or cannot be redistributed in a portable
 pipeline image.
 
-## Input
+## RNA evidence input
+
+Supply exactly one of `--reads` or `--trinity`.
+
+### Paired RNA-seq reads
 
 Create a tab-separated reads file with one row per paired RNA-seq library:
 
@@ -36,7 +40,17 @@ The header is optional. Paths may be absolute or relative to the launch
 directory. The sample column is descriptive; all libraries are supplied to one
 Funannotate training run in file order.
 
+### Trinity assemblies
+
+Use `--trinity` with either one assembled transcript FASTA or a quoted glob that
+matches multiple tissue assemblies. The pipeline stages and concatenates all
+matching assemblies before passing one combined FASTA to `funannotate train
+--trinity`. Because assembled transcripts do not retain the raw library layout,
+`--stranded` is not used in this mode.
+
 ## Run
+
+With paired reads:
 
 ```bash
 nextflow run main.nf -profile slurm,conda \
@@ -48,6 +62,23 @@ nextflow run main.nf -profile slurm,conda \
   --iprscan_path /opt/interproscan/interproscan.sh \
   --outdir results
 ```
+
+With preassembled Trinity transcriptomes:
+
+```bash
+nextflow run main.nf -profile slurm \
+  --genome /data/pantherophis.softmasked.fasta \
+  --trinity '/home/jhoffman1/mendel-nas1/pantherophis/transcriptomes/ratsnake_transcriptome_assemblies/*.trinity.fasta' \
+  --species 'Pantherophis guttatus' \
+  --funannotate_db /mendel-nas1/jhoffman1/fasciatus_genome/funannotate/funannotate_db \
+  --genemark_path /home/jhoffman1/mendel-nas1/fasciatus_genome/funannotate/gmes_linux_64_4 \
+  --iprscan_path /home/jhoffman1/mendel-nas1/fasciatus_genome/funannotate/my_interproscan/interproscan-5.71-102.0/interproscan.sh \
+  --outdir pantherophis_results \
+  -resume
+```
+
+Keep the Trinity glob quoted so Nextflow, rather than the shell, resolves all
+matching files as a single pipeline parameter.
 
 After manually correcting a `.tbl`, resume the cached run:
 
