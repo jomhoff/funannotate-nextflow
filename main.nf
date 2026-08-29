@@ -74,7 +74,18 @@ process TRAIN_TRINITY {
     """
     export FUNANNOTATE_DB=${shellQuote(funannotate_db)}
     export GENEMARK_PATH=${shellQuote(genemark_path)}
-    cat ${assemblies} > combined.trinity.fasta
+    : > combined.trinity.fasta
+    assembly_index=0
+    for assembly in ${assemblies}; do
+        assembly_index=\$((assembly_index + 1))
+        awk -v source="\$assembly_index" '
+            /^>/ {
+                record++
+                sub(/^>/, ">SRC" source "_TX" record "_")
+            }
+            { print }
+        ' "\$assembly" >> combined.trinity.fasta
+    done
     funannotate train \
         -i ${shellQuote(genome.name)} \
         -o annotation \
