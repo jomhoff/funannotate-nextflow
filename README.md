@@ -45,7 +45,10 @@ Funannotate training run in file order.
 Use `--trinity` with either one assembled transcript FASTA or a quoted glob that
 matches multiple tissue assemblies. The pipeline stages and concatenates all
 matching assemblies before passing one combined FASTA to `funannotate train
---trinity`. Because assembled transcripts do not retain the raw library layout,
+--trinity`. During concatenation, every transcript identifier receives a unique
+source and record prefix. This prevents the repeated `TRINITY_DN...` identifiers
+produced by independent tissue assemblies from violating PASA's unique-accession
+constraint. Because assembled transcripts do not retain the raw library layout,
 `--stranded` is not used in this mode.
 
 ## Run
