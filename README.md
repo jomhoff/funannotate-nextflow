@@ -18,6 +18,15 @@ resume with the corrected file.
 - A local InterProScan installation configured for the compute environment
 - Mamba/Conda when using `-profile conda`
 
+The supplied Conda environment pins TransDecoder 5.7.1 because PASA 2.5.3 calls
+the legacy `TransDecoder.LongOrfs` and `TransDecoder.Predict` executables
+directly. Verify them after creating or updating the environment:
+
+```bash
+command -v TransDecoder.LongOrfs
+command -v TransDecoder.Predict
+```
+
 GeneMark, InterProScan, and the Funannotate databases are deliberately passed as
 host paths because they are large and/or cannot be redistributed in a portable
 pipeline image.
