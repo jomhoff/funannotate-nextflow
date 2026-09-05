@@ -2,6 +2,7 @@ nextflow.enable.dsl = 2
 
 params.genome = null
 params.reads = null
+params.trinity = null
 params.species = null
 params.outdir = 'results'
 params.busco_db = 'tetrapoda'
@@ -18,7 +19,7 @@ def shellQuote(value) {
     "'${value.toString().replace("'", "'\\''")}'"
 }
 
-process TRAIN {
+process TRAIN_READS {
     tag "${species}"
     label 'train'
 
@@ -49,6 +50,56 @@ process TRAIN {
         --species ${shellQuote(species)} \
         --max_intronlen ${max_intronlen} \
         --stranded ${shellQuote(stranded)} \
+        --cpus ${task.cpus}
+    """
+}
+
+process TRAIN_TRINITY {
+    tag "${species}"
+    label 'train'
+
+    input:
+    path genome
+    path trinity_assemblies
+    val species
+    val max_intronlen
+    val funannotate_db
+    val genemark_path
+
+    output:
+    path 'annotation', emit: annotation
+
+    script:
+    def assemblies = trinity_assemblies.collect { shellQuote(it.name) }.join(' ')
+    """
+    export FUNANNOTATE_DB=${shellQuote(funannotate_db)}
+    export GENEMARK_PATH=${shellQuote(genemark_path)}
+    transdecoder_longorfs=\$(command -v TransDecoder.LongOrfs)
+    test -n "\$transdecoder_longorfs" || { echo 'TransDecoder.LongOrfs not found in PATH' >&2; exit 1; }
+    transdecoder_root=\$(dirname "\$(readlink -f "\$transdecoder_longorfs")")
+    export PATH="\$transdecoder_root/util:\$PATH"
+    command -v cdna_alignment_orf_to_genome_orf.pl >/dev/null || {
+        echo 'cdna_alignment_orf_to_genome_orf.pl not found in TransDecoder util directory' >&2
+        exit 1
+    }
+    : > combined.trinity.fasta
+    assembly_index=0
+    for assembly in ${assemblies}; do
+        assembly_index=\$((assembly_index + 1))
+        awk -v source="\$assembly_index" '
+            /^>/ {
+                record++
+                sub(/^>/, ">SRC" source "_TX" record "_")
+            }
+            { print }
+        ' "\$assembly" >> combined.trinity.fasta
+    done
+    funannotate train \
+        -i ${shellQuote(genome.name)} \
+        -o annotation \
+        --trinity combined.trinity.fasta \
+        --species ${shellQuote(species)} \
+        --max_intronlen ${max_intronlen} \
         --cpus ${task.cpus}
     """
 }
@@ -174,7 +225,6 @@ process ANNOTATE {
 workflow {
     def required = [
         genome: params.genome,
-        reads: params.reads,
         species: params.species,
         funannotate_db: params.funannotate_db,
         genemark_path: params.genemark_path,
@@ -185,24 +235,38 @@ workflow {
         error "Missing required parameter(s): ${missing.join(', ')}"
     }
 
-    def rows = file(params.reads, checkIfExists: true)
-        .readLines()
-        .findAll { it.trim() && !it.startsWith('#') }
-    if (rows && rows[0].toLowerCase().startsWith('sample\t')) rows = rows.drop(1)
-    def pairs = rows.collect { line ->
-        def fields = line.split('\\t', -1)
-        if (fields.size() < 3) error "Reads TSV rows require sample, left, and right columns: ${line}"
-        tuple(fields[0], file(fields[1], checkIfExists: true), file(fields[2], checkIfExists: true))
+    if ((params.reads && params.trinity) || (!params.reads && !params.trinity)) {
+        error 'Supply exactly one RNA evidence input: --reads or --trinity'
     }
-    if (!pairs) error 'The reads TSV contains no read pairs'
 
     genome_ch = Channel.value(file(params.genome, checkIfExists: true))
-    left_ch = Channel.value(pairs.collect { it[1] })
-    right_ch = Channel.value(pairs.collect { it[2] })
+    if (params.trinity) {
+        trinity_ch = Channel.fromPath(params.trinity, checkIfExists: true).collect()
+        TRAIN_TRINITY(genome_ch, trinity_ch, params.species,
+                      params.max_intronlen, params.funannotate_db,
+                      params.genemark_path)
+        trained_annotation = TRAIN_TRINITY.out.annotation
+    } else {
+        def rows = file(params.reads, checkIfExists: true)
+            .readLines()
+            .findAll { it.trim() && !it.startsWith('#') }
+        if (rows && rows[0].toLowerCase().startsWith('sample\t')) rows = rows.drop(1)
+        def pairs = rows.collect { line ->
+            def fields = line.split('\\t', -1)
+            if (fields.size() < 3) error "Reads TSV rows require sample, left, and right columns: ${line}"
+            tuple(fields[0], file(fields[1], checkIfExists: true), file(fields[2], checkIfExists: true))
+        }
+        if (!pairs) error 'The reads TSV contains no read pairs'
 
-    TRAIN(genome_ch, left_ch, right_ch, params.species, params.stranded,
-          params.max_intronlen, params.funannotate_db, params.genemark_path)
-    PREDICT(TRAIN.out.annotation, genome_ch, params.species, params.busco_db,
+        left_ch = Channel.value(pairs.collect { it[1] })
+        right_ch = Channel.value(pairs.collect { it[2] })
+        TRAIN_READS(genome_ch, left_ch, right_ch, params.species,
+                    params.stranded, params.max_intronlen,
+                    params.funannotate_db, params.genemark_path)
+        trained_annotation = TRAIN_READS.out.annotation
+    }
+
+    PREDICT(trained_annotation, genome_ch, params.species, params.busco_db,
             params.organism, params.busco_seed_species, params.funannotate_db,
             params.genemark_path)
     UPDATE(PREDICT.out.annotation, params.funannotate_db, params.genemark_path)
