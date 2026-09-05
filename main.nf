@@ -74,6 +74,14 @@ process TRAIN_TRINITY {
     """
     export FUNANNOTATE_DB=${shellQuote(funannotate_db)}
     export GENEMARK_PATH=${shellQuote(genemark_path)}
+    transdecoder_longorfs=\$(command -v TransDecoder.LongOrfs)
+    test -n "\$transdecoder_longorfs" || { echo 'TransDecoder.LongOrfs not found in PATH' >&2; exit 1; }
+    transdecoder_root=\$(dirname "\$(readlink -f "\$transdecoder_longorfs")")
+    export PATH="\$transdecoder_root/util:\$PATH"
+    command -v cdna_alignment_orf_to_genome_orf.pl >/dev/null || {
+        echo 'cdna_alignment_orf_to_genome_orf.pl not found in TransDecoder util directory' >&2
+        exit 1
+    }
     : > combined.trinity.fasta
     assembly_index=0
     for assembly in ${assemblies}; do
