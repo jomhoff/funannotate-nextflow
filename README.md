@@ -25,7 +25,13 @@ directly. Verify them after creating or updating the environment:
 ```bash
 command -v TransDecoder.LongOrfs
 command -v TransDecoder.Predict
+command -v cdna_alignment_orf_to_genome_orf.pl
 ```
+
+The Trinity training process also resolves the installed TransDecoder root and
+prepends its `util/` directory to `PATH`. This is needed by PASA 2.5.3, which
+invokes `cdna_alignment_orf_to_genome_orf.pl` by command name even though some
+Conda builds do not expose that utility in the environment's `bin/` directory.
 
 GeneMark, InterProScan, and the Funannotate databases are deliberately passed as
 host paths because they are large and/or cannot be redistributed in a portable
