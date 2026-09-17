@@ -82,6 +82,12 @@ the assembled transcripts are aligned and used as prediction evidence. This is
 a scientifically safer fallback, but it does not perform PASA refinement or
 expression-ranked PASA model selection.
 
+Transcript-only mode also passes an empty, valid GFF3 through
+`--protein_alignments`. This explicitly disables Funannotate's automatic
+fallback to mapping the complete Swiss-Prot database against the genome. The
+prediction therefore uses transcript evidence and BUSCO-trained ab initio
+predictors, but no external protein evidence.
+
 ## Run
 
 With paired reads:

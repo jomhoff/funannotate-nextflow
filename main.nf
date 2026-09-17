@@ -77,6 +77,7 @@ process PREDICT_TRINITY_ONLY {
     """
     export FUNANNOTATE_DB=${shellQuote(funannotate_db)}
     export GENEMARK_PATH=${shellQuote(genemark_path)}
+    echo '##gff-version 3' > no_protein_alignments.gff3
     : > combined.trinity.fasta
     assembly_index=0
     for assembly in ${assemblies}; do
@@ -97,6 +98,7 @@ process PREDICT_TRINITY_ONLY {
         --organism ${shellQuote(organism)} \
         --busco_seed_species ${shellQuote(seed_species)} \
         --transcript_evidence combined.trinity.fasta \
+        --protein_alignments no_protein_alignments.gff3 \
         --max_intronlen ${max_intronlen} \
         --repeats2evm \
         --cpus ${task.cpus}
