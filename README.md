@@ -4,11 +4,19 @@ This DSL2 pipeline turns the workflow in
 [`functional_annotation.md`](https://github.com/jomhoff/Genome-Annotation/blob/main/functional_annotation.md)
 into a resumable chain:
 
+With raw RNA-seq reads, the workflow is:
+
 `train -> predict -> update -> [fix] -> iprscan -> annotate`
 
-`fix` is skipped unless `--corrected_tbl` is supplied. This preserves the manual
-review step: inspect the update log/archive, edit the generated NCBI `.tbl`, then
-resume with the corrected file.
+With assembled Trinity transcripts but no FASTQ reads, it is:
+
+`predict --transcript_evidence -> iprscan -> annotate`
+
+In reads mode, `fix` is skipped unless `--corrected_tbl` is supplied. This
+preserves the manual review step: inspect the update log/archive, edit the
+generated NCBI `.tbl`, then resume with the corrected file. Transcript-only mode
+does not run `update` or `fix` because those PASA stages require the missing raw
+reads.
 
 ## Requirements
 
@@ -59,12 +67,20 @@ Funannotate training run in file order.
 
 Use `--trinity` with either one assembled transcript FASTA or a quoted glob that
 matches multiple tissue assemblies. The pipeline stages and concatenates all
-matching assemblies before passing one combined FASTA to `funannotate train
---trinity`. During concatenation, every transcript identifier receives a unique
+matching assemblies before passing one combined FASTA to `funannotate predict
+--transcript_evidence`. During concatenation, every transcript identifier receives a unique
 source and record prefix. This prevents the repeated `TRINITY_DN...` identifiers
-produced by independent tissue assemblies from violating PASA's unique-accession
-constraint. Because assembled transcripts do not retain the raw library layout,
-`--stranded` is not used in this mode.
+produced by independent tissue assemblies from colliding. Because assembled
+transcripts do not retain the raw library layout, `--stranded` is not used in
+this mode.
+
+Funannotate 1.8.17 cannot complete `funannotate train --trinity` without raw
+reads: after PASA it invokes Kallisto to rank competing models, but has no reads
+to quantify. The transcript-only route therefore bypasses `train` and `update`
+instead of inventing expression values. BUSCO supplies ab initio training and
+the assembled transcripts are aligned and used as prediction evidence. This is
+a scientifically safer fallback, but it does not perform PASA refinement or
+expression-ranked PASA model selection.
 
 ## Run
 
@@ -86,8 +102,8 @@ With preassembled Trinity transcriptomes:
 ```bash
 nextflow run main.nf -profile slurm \
   --genome /data/pantherophis.softmasked.fasta \
-  --trinity '/home/jhoffman1/mendel-nas1/pantherophis/transcriptomes/ratsnake_transcriptome_assemblies/*.trinity.fasta' \
-  --species 'Pantherophis guttatus' \
+  --trinity /home/jhoffman1/mendel-nas1/pantherophis/transcriptomes/ratsnake_transcriptome_assemblies/pantherophis.all-tissues.trinity.fasta \
+  --species 'Pantherophis spiloides' \
   --funannotate_db /mendel-nas1/jhoffman1/fasciatus_genome/funannotate/funannotate_db \
   --genemark_path /home/jhoffman1/mendel-nas1/fasciatus_genome/funannotate/gmes_linux_64_4 \
   --iprscan_path /home/jhoffman1/mendel-nas1/fasciatus_genome/funannotate/my_interproscan/interproscan-5.71-102.0/interproscan.sh \
@@ -95,8 +111,10 @@ nextflow run main.nf -profile slurm \
   -resume
 ```
 
-Keep the Trinity glob quoted so Nextflow, rather than the shell, resolves all
-matching files as a single pipeline parameter.
+If an already combined transcriptome is available, use only that file. Do not
+also include its component tissue assemblies, which would duplicate every
+transcript. When supplying a glob instead, keep it quoted so Nextflow, rather
+than the shell, resolves all matching files as a single pipeline parameter.
 
 After manually correcting a `.tbl`, resume the cached run:
 

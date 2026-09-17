@@ -54,14 +54,17 @@ process TRAIN_READS {
     """
 }
 
-process TRAIN_TRINITY {
+process PREDICT_TRINITY_ONLY {
     tag "${species}"
-    label 'train'
+    label 'predict'
 
     input:
     path genome
     path trinity_assemblies
     val species
+    val busco_db
+    val organism
+    val seed_species
     val max_intronlen
     val funannotate_db
     val genemark_path
@@ -74,14 +77,6 @@ process TRAIN_TRINITY {
     """
     export FUNANNOTATE_DB=${shellQuote(funannotate_db)}
     export GENEMARK_PATH=${shellQuote(genemark_path)}
-    transdecoder_longorfs=\$(command -v TransDecoder.LongOrfs)
-    test -n "\$transdecoder_longorfs" || { echo 'TransDecoder.LongOrfs not found in PATH' >&2; exit 1; }
-    transdecoder_root=\$(dirname "\$(readlink -f "\$transdecoder_longorfs")")
-    export PATH="\$transdecoder_root/util:\$PATH"
-    command -v cdna_alignment_orf_to_genome_orf.pl >/dev/null || {
-        echo 'cdna_alignment_orf_to_genome_orf.pl not found in TransDecoder util directory' >&2
-        exit 1
-    }
     : > combined.trinity.fasta
     assembly_index=0
     for assembly in ${assemblies}; do
@@ -94,12 +89,16 @@ process TRAIN_TRINITY {
             { print }
         ' "\$assembly" >> combined.trinity.fasta
     done
-    funannotate train \
+    funannotate predict \
         -i ${shellQuote(genome.name)} \
         -o annotation \
-        --trinity combined.trinity.fasta \
         --species ${shellQuote(species)} \
+        --busco_db ${shellQuote(busco_db)} \
+        --organism ${shellQuote(organism)} \
+        --busco_seed_species ${shellQuote(seed_species)} \
+        --transcript_evidence combined.trinity.fasta \
         --max_intronlen ${max_intronlen} \
+        --repeats2evm \
         --cpus ${task.cpus}
     """
 }
@@ -235,17 +234,21 @@ workflow {
         error "Missing required parameter(s): ${missing.join(', ')}"
     }
 
-    if ((params.reads && params.trinity) || (!params.reads && !params.trinity)) {
-        error 'Supply exactly one RNA evidence input: --reads or --trinity'
+    if (!params.reads && !params.trinity) {
+        error 'Supply RNA evidence with --reads and/or --trinity'
+    }
+    if (params.reads && params.trinity) {
+        error 'This release does not yet combine --reads and --trinity; supply one input mode'
     }
 
     genome_ch = Channel.value(file(params.genome, checkIfExists: true))
     if (params.trinity) {
         trinity_ch = Channel.fromPath(params.trinity, checkIfExists: true).collect()
-        TRAIN_TRINITY(genome_ch, trinity_ch, params.species,
-                      params.max_intronlen, params.funannotate_db,
-                      params.genemark_path)
-        trained_annotation = TRAIN_TRINITY.out.annotation
+        PREDICT_TRINITY_ONLY(genome_ch, trinity_ch, params.species,
+                             params.busco_db, params.organism,
+                             params.busco_seed_species, params.max_intronlen,
+                             params.funannotate_db, params.genemark_path)
+        annotation_for_iprscan = PREDICT_TRINITY_ONLY.out.annotation
     } else {
         def rows = file(params.reads, checkIfExists: true)
             .readLines()
@@ -264,18 +267,18 @@ workflow {
                     params.stranded, params.max_intronlen,
                     params.funannotate_db, params.genemark_path)
         trained_annotation = TRAIN_READS.out.annotation
-    }
 
-    PREDICT(trained_annotation, genome_ch, params.species, params.busco_db,
-            params.organism, params.busco_seed_species, params.funannotate_db,
-            params.genemark_path)
-    UPDATE(PREDICT.out.annotation, params.funannotate_db, params.genemark_path)
+        PREDICT(trained_annotation, genome_ch, params.species, params.busco_db,
+                params.organism, params.busco_seed_species, params.funannotate_db,
+                params.genemark_path)
+        UPDATE(PREDICT.out.annotation, params.funannotate_db, params.genemark_path)
 
-    annotation_for_iprscan = UPDATE.out.annotation
-    if (params.corrected_tbl) {
-        FIX(UPDATE.out.annotation, file(params.corrected_tbl, checkIfExists: true),
-            params.funannotate_db, params.genemark_path)
-        annotation_for_iprscan = FIX.out.annotation
+        annotation_for_iprscan = UPDATE.out.annotation
+        if (params.corrected_tbl) {
+            FIX(UPDATE.out.annotation, file(params.corrected_tbl, checkIfExists: true),
+                params.funannotate_db, params.genemark_path)
+            annotation_for_iprscan = FIX.out.annotation
+        }
     }
 
     IPRSCAN(annotation_for_iprscan, params.iprscan_path)
