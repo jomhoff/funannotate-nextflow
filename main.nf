@@ -2,6 +2,7 @@ nextflow.enable.dsl = 2
 
 params.genome = null
 params.reads = null
+params.trinity = null
 params.species = null
 params.outdir = 'results'
 params.busco_db = 'tetrapoda'
@@ -18,7 +19,7 @@ def shellQuote(value) {
     "'${value.toString().replace("'", "'\\''")}'"
 }
 
-process TRAIN {
+process TRAIN_READS {
     tag "${species}"
     label 'train'
 
@@ -49,6 +50,57 @@ process TRAIN {
         --species ${shellQuote(species)} \
         --max_intronlen ${max_intronlen} \
         --stranded ${shellQuote(stranded)} \
+        --cpus ${task.cpus}
+    """
+}
+
+process PREDICT_TRINITY_ONLY {
+    tag "${species}"
+    label 'predict'
+
+    input:
+    path genome
+    path trinity_assemblies
+    val species
+    val busco_db
+    val organism
+    val seed_species
+    val max_intronlen
+    val funannotate_db
+    val genemark_path
+
+    output:
+    path 'annotation', emit: annotation
+
+    script:
+    def assemblies = trinity_assemblies.collect { shellQuote(it.name) }.join(' ')
+    """
+    export FUNANNOTATE_DB=${shellQuote(funannotate_db)}
+    export GENEMARK_PATH=${shellQuote(genemark_path)}
+    echo '##gff-version 3' > no_protein_alignments.gff3
+    : > combined.trinity.fasta
+    assembly_index=0
+    for assembly in ${assemblies}; do
+        assembly_index=\$((assembly_index + 1))
+        awk -v source="\$assembly_index" '
+            /^>/ {
+                record++
+                sub(/^>/, ">SRC" source "_TX" record "_")
+            }
+            { print }
+        ' "\$assembly" >> combined.trinity.fasta
+    done
+    funannotate predict \
+        -i ${shellQuote(genome.name)} \
+        -o annotation \
+        --species ${shellQuote(species)} \
+        --busco_db ${shellQuote(busco_db)} \
+        --organism ${shellQuote(organism)} \
+        --busco_seed_species ${shellQuote(seed_species)} \
+        --transcript_evidence combined.trinity.fasta \
+        --protein_alignments no_protein_alignments.gff3 \
+        --max_intronlen ${max_intronlen} \
+        --repeats2evm \
         --cpus ${task.cpus}
     """
 }
@@ -174,7 +226,6 @@ process ANNOTATE {
 workflow {
     def required = [
         genome: params.genome,
-        reads: params.reads,
         species: params.species,
         funannotate_db: params.funannotate_db,
         genemark_path: params.genemark_path,
@@ -185,33 +236,51 @@ workflow {
         error "Missing required parameter(s): ${missing.join(', ')}"
     }
 
-    def rows = file(params.reads, checkIfExists: true)
-        .readLines()
-        .findAll { it.trim() && !it.startsWith('#') }
-    if (rows && rows[0].toLowerCase().startsWith('sample\t')) rows = rows.drop(1)
-    def pairs = rows.collect { line ->
-        def fields = line.split('\\t', -1)
-        if (fields.size() < 3) error "Reads TSV rows require sample, left, and right columns: ${line}"
-        tuple(fields[0], file(fields[1], checkIfExists: true), file(fields[2], checkIfExists: true))
+    if (!params.reads && !params.trinity) {
+        error 'Supply RNA evidence with --reads and/or --trinity'
     }
-    if (!pairs) error 'The reads TSV contains no read pairs'
+    if (params.reads && params.trinity) {
+        error 'This release does not yet combine --reads and --trinity; supply one input mode'
+    }
 
     genome_ch = Channel.value(file(params.genome, checkIfExists: true))
-    left_ch = Channel.value(pairs.collect { it[1] })
-    right_ch = Channel.value(pairs.collect { it[2] })
+    if (params.trinity) {
+        trinity_ch = Channel.fromPath(params.trinity, checkIfExists: true).collect()
+        PREDICT_TRINITY_ONLY(genome_ch, trinity_ch, params.species,
+                             params.busco_db, params.organism,
+                             params.busco_seed_species, params.max_intronlen,
+                             params.funannotate_db, params.genemark_path)
+        annotation_for_iprscan = PREDICT_TRINITY_ONLY.out.annotation
+    } else {
+        def rows = file(params.reads, checkIfExists: true)
+            .readLines()
+            .findAll { it.trim() && !it.startsWith('#') }
+        if (rows && rows[0].toLowerCase().startsWith('sample\t')) rows = rows.drop(1)
+        def pairs = rows.collect { line ->
+            def fields = line.split('\\t', -1)
+            if (fields.size() < 3) error "Reads TSV rows require sample, left, and right columns: ${line}"
+            tuple(fields[0], file(fields[1], checkIfExists: true), file(fields[2], checkIfExists: true))
+        }
+        if (!pairs) error 'The reads TSV contains no read pairs'
 
-    TRAIN(genome_ch, left_ch, right_ch, params.species, params.stranded,
-          params.max_intronlen, params.funannotate_db, params.genemark_path)
-    PREDICT(TRAIN.out.annotation, genome_ch, params.species, params.busco_db,
-            params.organism, params.busco_seed_species, params.funannotate_db,
-            params.genemark_path)
-    UPDATE(PREDICT.out.annotation, params.funannotate_db, params.genemark_path)
+        left_ch = Channel.value(pairs.collect { it[1] })
+        right_ch = Channel.value(pairs.collect { it[2] })
+        TRAIN_READS(genome_ch, left_ch, right_ch, params.species,
+                    params.stranded, params.max_intronlen,
+                    params.funannotate_db, params.genemark_path)
+        trained_annotation = TRAIN_READS.out.annotation
 
-    annotation_for_iprscan = UPDATE.out.annotation
-    if (params.corrected_tbl) {
-        FIX(UPDATE.out.annotation, file(params.corrected_tbl, checkIfExists: true),
-            params.funannotate_db, params.genemark_path)
-        annotation_for_iprscan = FIX.out.annotation
+        PREDICT(trained_annotation, genome_ch, params.species, params.busco_db,
+                params.organism, params.busco_seed_species, params.funannotate_db,
+                params.genemark_path)
+        UPDATE(PREDICT.out.annotation, params.funannotate_db, params.genemark_path)
+
+        annotation_for_iprscan = UPDATE.out.annotation
+        if (params.corrected_tbl) {
+            FIX(UPDATE.out.annotation, file(params.corrected_tbl, checkIfExists: true),
+                params.funannotate_db, params.genemark_path)
+            annotation_for_iprscan = FIX.out.annotation
+        }
     }
 
     IPRSCAN(annotation_for_iprscan, params.iprscan_path)

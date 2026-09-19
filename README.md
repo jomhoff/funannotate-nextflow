@@ -4,11 +4,19 @@ This DSL2 pipeline turns the workflow in
 [`functional_annotation.md`](https://github.com/jomhoff/Genome-Annotation/blob/main/functional_annotation.md)
 into a resumable chain:
 
+With raw RNA-seq reads, the workflow is:
+
 `train -> predict -> update -> [fix] -> iprscan -> annotate`
 
-`fix` is skipped unless `--corrected_tbl` is supplied. This preserves the manual
-review step: inspect the update log/archive, edit the generated NCBI `.tbl`, then
-resume with the corrected file.
+With assembled Trinity transcripts but no FASTQ reads, it is:
+
+`predict --transcript_evidence -> iprscan -> annotate`
+
+In reads mode, `fix` is skipped unless `--corrected_tbl` is supplied. This
+preserves the manual review step: inspect the update log/archive, edit the
+generated NCBI `.tbl`, then resume with the corrected file. Transcript-only mode
+does not run `update` or `fix` because those PASA stages require the missing raw
+reads.
 
 ## Requirements
 
@@ -18,11 +26,30 @@ resume with the corrected file.
 - A local InterProScan installation configured for the compute environment
 - Mamba/Conda when using `-profile conda`
 
+The supplied Conda environment pins TransDecoder 5.7.1 because PASA 2.5.3 calls
+the legacy `TransDecoder.LongOrfs` and `TransDecoder.Predict` executables
+directly. Verify them after creating or updating the environment:
+
+```bash
+command -v TransDecoder.LongOrfs
+command -v TransDecoder.Predict
+command -v cdna_alignment_orf_to_genome_orf.pl
+```
+
+The Trinity training process also resolves the installed TransDecoder root and
+prepends its `util/` directory to `PATH`. This is needed by PASA 2.5.3, which
+invokes `cdna_alignment_orf_to_genome_orf.pl` by command name even though some
+Conda builds do not expose that utility in the environment's `bin/` directory.
+
 GeneMark, InterProScan, and the Funannotate databases are deliberately passed as
 host paths because they are large and/or cannot be redistributed in a portable
 pipeline image.
 
-## Input
+## RNA evidence input
+
+Supply exactly one of `--reads` or `--trinity`.
+
+### Paired RNA-seq reads
 
 Create a tab-separated reads file with one row per paired RNA-seq library:
 
@@ -36,7 +63,34 @@ The header is optional. Paths may be absolute or relative to the launch
 directory. The sample column is descriptive; all libraries are supplied to one
 Funannotate training run in file order.
 
+### Trinity assemblies
+
+Use `--trinity` with either one assembled transcript FASTA or a quoted glob that
+matches multiple tissue assemblies. The pipeline stages and concatenates all
+matching assemblies before passing one combined FASTA to `funannotate predict
+--transcript_evidence`. During concatenation, every transcript identifier receives a unique
+source and record prefix. This prevents the repeated `TRINITY_DN...` identifiers
+produced by independent tissue assemblies from colliding. Because assembled
+transcripts do not retain the raw library layout, `--stranded` is not used in
+this mode.
+
+Funannotate 1.8.17 cannot complete `funannotate train --trinity` without raw
+reads: after PASA it invokes Kallisto to rank competing models, but has no reads
+to quantify. The transcript-only route therefore bypasses `train` and `update`
+instead of inventing expression values. BUSCO supplies ab initio training and
+the assembled transcripts are aligned and used as prediction evidence. This is
+a scientifically safer fallback, but it does not perform PASA refinement or
+expression-ranked PASA model selection.
+
+Transcript-only mode also passes an empty, valid GFF3 through
+`--protein_alignments`. This explicitly disables Funannotate's automatic
+fallback to mapping the complete Swiss-Prot database against the genome. The
+prediction therefore uses transcript evidence and BUSCO-trained ab initio
+predictors, but no external protein evidence.
+
 ## Run
+
+With paired reads:
 
 ```bash
 nextflow run main.nf -profile slurm,conda \
@@ -48,6 +102,25 @@ nextflow run main.nf -profile slurm,conda \
   --iprscan_path /opt/interproscan/interproscan.sh \
   --outdir results
 ```
+
+With preassembled Trinity transcriptomes:
+
+```bash
+nextflow run main.nf -profile slurm \
+  --genome /data/pantherophis.softmasked.fasta \
+  --trinity /home/jhoffman1/mendel-nas1/pantherophis/transcriptomes/ratsnake_transcriptome_assemblies/pantherophis.all-tissues.trinity.fasta \
+  --species 'Pantherophis spiloides' \
+  --funannotate_db /mendel-nas1/jhoffman1/fasciatus_genome/funannotate/funannotate_db \
+  --genemark_path /home/jhoffman1/mendel-nas1/fasciatus_genome/funannotate/gmes_linux_64_4 \
+  --iprscan_path /home/jhoffman1/mendel-nas1/fasciatus_genome/funannotate/my_interproscan/interproscan-5.71-102.0/interproscan.sh \
+  --outdir pantherophis_results \
+  -resume
+```
+
+If an already combined transcriptome is available, use only that file. Do not
+also include its component tissue assemblies, which would duplicate every
+transcript. When supplying a glob instead, keep it quoted so Nextflow, rather
+than the shell, resolves all matching files as a single pipeline parameter.
 
 After manually correcting a `.tbl`, resume the cached run:
 
